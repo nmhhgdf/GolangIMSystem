@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 type Server struct {
@@ -31,14 +33,48 @@ func NewServer(ip string, port int) *Server {
 func (this *Server) Handler(conn net.Conn) {
 	fmt.Println("链接建立成功")
 
-	user := NewUser(conn)
-	this.mapLock.Lock()
-	this.OnlineMap[user.Name] = user
-	this.mapLock.Unlock()
+	user := NewUser(conn, this)
 
-	this.BroadCast(user, "已上线")
+	user.Online()
 
-	select {}
+	// 监听用户是否活跃的channel
+	isLive := make(chan bool)
+
+	// 接受呵护短发送的消息
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := conn.Read(buf)
+			if n == 0 {
+				user.Offline()
+				return
+			}
+
+			if err != nil && err != io.EOF {
+				fmt.Println("Conn Read err:", err)
+				return
+			}
+
+			msg := string(buf[:n-1])
+
+			user.DoMessage(msg)
+
+			isLive <- true
+		}
+	}()
+
+	for {
+		select {
+		case <-isLive:
+
+		case <-time.After(time.Second * 30):
+			user.SendMsg("user time out, logout.")
+			close(user.C)
+			conn.Close()
+			return // runtime.Goexit()
+		}
+
+	}
 }
 
 func (this *Server) ListenMessager() {
